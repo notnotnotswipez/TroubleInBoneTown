@@ -4,7 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using TroubleInBoneTown; // The namespace of your mod class
 // ...
-[assembly: MelonInfo(typeof(TroubleInBoneTownMainClass), "TroubleInBoneTown", "1.0.0", "notnotnotswipez")]
+[assembly: MelonInfo(typeof(TroubleInBoneTownMainClass), "TroubleInBoneTown", "1.1.0", "notnotnotswipez")]
 
 // General Information about an assembly is controlled through the following 
 // set of attributes. Change these attribute values to modify the information

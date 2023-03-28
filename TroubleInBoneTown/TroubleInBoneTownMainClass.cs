@@ -11,6 +11,7 @@ using LabFusion.Network;
 using LabFusion.Patching;
 using LabFusion.Representation;
 using LabFusion.SDK.Gamemodes;
+using LabFusion.SDK.Points;
 using LabFusion.Senders;
 using LabFusion.Utilities;
 using MelonLoader;
@@ -66,7 +67,7 @@ namespace TroubleInBoneTown
             if (wristUISpawned)
             {
                 Vector3 euler = wristUISpawned.transform.eulerAngles;
-                if (euler.x > minX && euler.x < maxX)
+                if (euler.x > minX && euler.x < maxX && Player.leftHand.m_CurrentAttachedGO == null)
                 {
                     wristUISpawned.SetActive(true);
                 }
@@ -169,6 +170,7 @@ namespace TroubleInBoneTown
 
         public const string DefaultPrefix = "InternalTTTMetadata";
         public const string PlayerRoleKey = DefaultPrefix + ".Role";
+        public const string PlayerBonusKey = DefaultPrefix + ".Bonus";
 
         public const string traitor_role = "TRAITOR";
         public const string innocent_role = "INNOCENT";
@@ -179,8 +181,6 @@ namespace TroubleInBoneTown
         private const string innocent_color = "#00ff00";
         private const string spectator_color = "#ffffff";
         private const string detective_color = "#0000ff";
-        
-        private string winState = "none";
 
         private int traitorCount = 1;
         private int prepDurationSeconds = 10;
@@ -189,6 +189,7 @@ namespace TroubleInBoneTown
         private int serverRoundDurationMinutes = 0;
 
         public static Dictionary<PlayerId, string> playerRoles = new Dictionary<PlayerId, string>();
+        public static Dictionary<PlayerId, string> originalPlayerRoles = new Dictionary<PlayerId, string>();
         private List<RigManager> ragdolls = new List<RigManager>();
 
         private GamemodeTimer prepTimeTimer = new GamemodeTimer();
@@ -389,6 +390,14 @@ namespace TroubleInBoneTown
             base.OnStartGamemode();
             checkRolesNow = false;
             _localPlayerRole = "none";
+            if (NetworkInfo.IsServer)
+            {
+                foreach (var playerId in PlayerIdManager.PlayerIds)
+                {
+                    SetBonus(playerId, 0);
+                }
+            }
+            
             FusionPlayer.SetAvatarOverride(Player.rigManager.AvatarCrate._barcode);
             FusionPlayer.SetAmmo(10000);
             FusionPlayer.SetMortality(true);
@@ -510,6 +519,11 @@ namespace TroubleInBoneTown
                 {
                     if (roundTimer.isRunning)
                     {
+                        if (playerRoles.ContainsKey(playerId))
+                        {
+                            playerRoles.Remove(playerId);
+                        }
+
                         CheckWinCondition();
                     }
                 }
@@ -520,6 +534,39 @@ namespace TroubleInBoneTown
         {
             if (IsActive() && roundTimer.isRunning)
             {
+                if (action == PlayerActionType.DEATH_BY_OTHER_PLAYER)
+                {
+                    if (NetworkInfo.IsServer)
+                    {
+                        if (originalPlayerRoles.ContainsKey(player) && originalPlayerRoles.ContainsKey(otherPlayer))
+                        {
+                            // Bad role killed good role, positive outcome
+                            if (IsBadRole(originalPlayerRoles[otherPlayer]) && IsGoodRole(originalPlayerRoles[player]))
+                            {
+                                ModifyBonus(otherPlayer, 20);
+                            }
+                            
+                            // Good role killed bad role, positive outcome
+                            if (IsGoodRole(originalPlayerRoles[otherPlayer]) && IsBadRole(originalPlayerRoles[player]))
+                            {
+                                ModifyBonus(otherPlayer, 50);
+                            }
+
+                            // Good role killed good role, negative outcome
+                            if (IsGoodRole(originalPlayerRoles[otherPlayer]) && IsGoodRole(originalPlayerRoles[player]))
+                            {
+                                ModifyBonus(otherPlayer, -30);
+                            }
+                            
+                            // Bad role killed bad role, negative outcome
+                            if (IsBadRole(originalPlayerRoles[otherPlayer]) && IsBadRole(originalPlayerRoles[player]))
+                            {
+                                ModifyBonus(otherPlayer, -50);
+                            }
+                        }
+                    }
+                }
+
                 if (action == PlayerActionType.DEATH)
                 {
                     checkRolesNow = true;
@@ -575,6 +622,16 @@ namespace TroubleInBoneTown
             }
         }
 
+        private bool IsGoodRole(string role)
+        {
+            return role == innocent_role || role == detective_role;
+        }
+
+        private bool IsBadRole(string role)
+        {
+            return role == traitor_role;
+        }
+
         public float GetRagdollOffset(RigManager rm)
         {
             float offset = 0.1f;
@@ -587,11 +644,16 @@ namespace TroubleInBoneTown
 
         protected override void OnEventTriggered(string value)
         {
+            bool gameEnded = false;
+            bool victorius = true;
             if (value == "RoundEndTimer")
             {
+                gameEnded = true;
                 string subtitle = "YOU WON! (Time Ran Out)";
+                
                 if (_localPlayerRole == traitor_role)
                 {
+                    victorius = false;
                     subtitle = "YOU LOST! (Time Ran Out)";
                 }
 
@@ -607,9 +669,11 @@ namespace TroubleInBoneTown
 
             if (value == "InnocentWin")
             {
+                gameEnded = true;
                 string subtitle = "YOU WON!";
                 if (_localPlayerRole == traitor_role)
                 {
+                    victorius = false;
                     subtitle = "YOU LOST!";
                 }
                 FusionNotifier.Send(new FusionNotification()
@@ -624,9 +688,11 @@ namespace TroubleInBoneTown
 
             if (value == "TraitorWin")
             {
+                gameEnded = true;
                 string subtitle = "YOU WON!";
                 if (_localPlayerRole == detective_role || _localPlayerRole == innocent_role)
                 {
+                    victorius = false;
                     subtitle = "YOU LOST!";
                 }
 
@@ -701,6 +767,71 @@ namespace TroubleInBoneTown
                 }
                 TryDisplayTraitors(ids);
             }
+
+            if (gameEnded)
+            {
+                // Lore (Traitors are sabrelake employees)
+                RewardBits(victorius);
+                if (!victorius)
+                {
+                    if (IsBadRole(_localPlayerRole))
+                    {
+                        FusionAudio.Play2D(FusionContentLoader.SabrelakeFailure);
+                    }
+                    else
+                    {
+                        FusionAudio.Play2D(FusionContentLoader.LavaGangFailure);
+                    }
+                }
+                else
+                {
+                    if (IsBadRole(_localPlayerRole))
+                    {
+                        FusionAudio.Play2D(FusionContentLoader.SabrelakeVictory);
+                    }
+                    else
+                    {
+                        FusionAudio.Play2D(FusionContentLoader.LavaGangVictory);
+                    }
+                }
+            }
+        }
+
+        private void RewardBits(bool victor)
+        {
+            int playerCount = PlayerIdManager.PlayerCount - 1;
+            int bits = 0;
+            float minimum = 0;
+            float maximum = 0;
+            
+            // 6 players is a fair amount of players to have in a game.
+            minimum = MathUtils.Map(playerCount, 0, 6, 0, 100);
+            maximum = MathUtils.Map(playerCount, 0, 6, 100, 250);
+            
+            int random = new Random().Next((int) minimum, (int) maximum);
+            if (victor)
+            {
+                bits = random;
+            }
+            else
+            {
+                // If we didnt win, half the bits.
+                bits = random / 2;
+            }
+
+            // Add bonus bits for how well we performed.
+            bits += GetBonus(PlayerIdManager.LocalId);
+            
+            FusionNotifier.Send(new FusionNotification() {
+                title = "Bits Rewarded",
+                showTitleOnPopup = true,
+                message = $"You Won {bits} Bits",
+                popupLength = 3f,
+                isMenuItem = false,
+                isPopup = true,
+            });
+
+            PointItemManager.RewardBits(bits);
         }
 
         private void TryDisplayTraitors(List<PlayerId> playerId)
@@ -788,7 +919,10 @@ namespace TroubleInBoneTown
             if (!playerRoles.ContainsKey(playerId))
             {
                 playerRoles.Add(playerId, role);
+                originalPlayerRoles.Add(playerId, role);
             }
+            
+            bool spectatorPreviously = playerRoles[playerId] == spectator_role;
 
             playerRoles[playerId] = role;
 
@@ -807,7 +941,7 @@ namespace TroubleInBoneTown
 
             if (role == spectator_role)
             {
-                if (playerId == PlayerIdManager.LocalId)
+                if (playerId == PlayerIdManager.LocalId && !spectatorPreviously)
                 {
                     if (!ignoreSpecNotification)
                     {
@@ -821,8 +955,12 @@ namespace TroubleInBoneTown
                             isPopup = true,
                         });
                     }
+
+                    if (!spectatorVolume)
+                    {
+                        spectatorVolume = GameObject.Instantiate(TTTAssetsLoader.spectatorVolume);
+                    }
                     
-                    spectatorVolume = GameObject.Instantiate(TTTAssetsLoader.spectatorVolume);
                     FusionPlayerExtended.SetWorldInteractable(false);
                     FusionPlayerExtended.SetCanDamageOthers(false);
                     FusionPlayer.SetAmmo(0);
@@ -964,6 +1102,8 @@ namespace TroubleInBoneTown
                 Object.DestroyObject(spectatorVolume);
             }
 
+            spectatorVolume = null;
+
             foreach (var rigmanager in ragdolls)
             {
                 GameObject.Destroy(rigmanager.gameObject);
@@ -982,6 +1122,7 @@ namespace TroubleInBoneTown
                 }
             }
             playerRoles.Clear();
+            originalPlayerRoles.Clear();
         }
 
         private void SetRole(PlayerId playerId, string role)
@@ -992,9 +1133,47 @@ namespace TroubleInBoneTown
             }
         }
 
+        private int GetBonus(PlayerId playerId)
+        {
+            string value;
+            if (TryGetMetadata(GetBonusKey(playerId), out value))
+            {
+                int number = 0;
+                if (int.TryParse(value, out number))
+                {
+                    return number;
+                }
+            }
+            return 0;
+        }
+
+        private void ModifyBonus(PlayerId playerId, int modification)
+        {
+            if (NetworkInfo.IsServer)
+            {
+                int desiredNumber = GetBonus(playerId);
+                desiredNumber += modification;
+
+                TrySetMetadata(GetBonusKey(playerId), desiredNumber.ToString());
+            }
+        }
+
+        private void SetBonus(PlayerId playerId, int bonus)
+        {
+            if (NetworkInfo.IsServer)
+            {
+                TrySetMetadata(GetBonusKey(playerId), bonus.ToString());
+            }
+        }
+
         private string GetRoleKey(PlayerId playerId)
         {
             return PlayerRoleKey + "." + playerId.LongId;
+        }
+        
+        private string GetBonusKey(PlayerId playerId)
+        {
+            return PlayerBonusKey + "." + playerId.LongId;
         }
 
         protected bool OnValidateNametag(PlayerId id) {

@@ -401,6 +401,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="GrabPatches.cs" />
+    <Compile Include="MathUtils.cs" />
     <Compile Include="TroubleInBoneTownMainClass.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
